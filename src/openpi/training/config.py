@@ -67,6 +67,8 @@ class DataConfig:
     repo_id: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
+    # Root directory for local LeRobot datasets. If provided, datasets will be loaded from this directory instead of downloading.
+    root: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
     norm_stats: dict[str, _transforms.NormStats] | None = None
 
@@ -236,6 +238,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     # the space used by the pi internal runtime which was used to train the base model. People who
     # use standard Aloha data should set this to true.
     adapt_to_pi: bool = True
+    # Root directory for local LeRobot datasets. If provided, datasets will be loaded from this directory instead of downloading.
+    root: str | None = None
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -275,8 +279,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            root=self.root,
         )
-
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoDataConfig(DataConfigFactory):
@@ -824,6 +828,47 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
+    ),
+    TrainConfig(
+        name="pi05_aloha_close_bag",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="lpp",
+            root="/home/locht1/Documents/locht1/code_convert/output/20251230_ALOHA_close_bag_3cam",
+            use_delta_joint_actions=False,
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.color.high",
+                                "cam_left_wrist": "observation.images.color.wrist_left",
+                                "cam_right_wrist": "observation.images.color.wrist_right",
+                            },
+                            "state": "observation.state",
+                            "prompt": "task",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        # The freeze filter defines which parameters should be frozen during training.
+        # We have a convenience function in the model config that returns the default freeze filter
+        # for the given model config for LoRA finetuning. Just make sure it matches the model config
+        # you chose above.
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=32,
     ),
     #
     # Fine-tuning DROID configs.
