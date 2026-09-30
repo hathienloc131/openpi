@@ -840,7 +840,10 @@ _CONFIGS = [
         name="pi05_bds_vfe_sim_pick_lora",
         # LoRA finetuning of pi0.5. State/actions are 16-dim (14 arm joints + 2 vacuums), padded to 32 by the model.
         model=pi0_config.Pi0Config(
-            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+            pi05=True,
+            action_horizon=16,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
         ),
         data=LeRobotBDSDataConfig(
             # Only used as a name for the norm stats asset dir; data is loaded from `lerobot_roots`.
