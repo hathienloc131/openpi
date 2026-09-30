@@ -137,6 +137,23 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    if data_config.lerobot_roots:
+        datasets = []
+        for root in data_config.lerobot_roots:
+            meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=root)
+            ds = lerobot_dataset.LeRobotDataset(
+                repo_id,
+                root=root,
+                delta_timestamps={
+                    key: [t / meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+                },
+            )
+            # Task indices are local to each dataset, so the prompt is resolved per dataset.
+            if data_config.prompt_from_task:
+                ds = TransformedDataset(ds, [_transforms.PromptFromLeRobotTask(meta.tasks)])
+            datasets.append(ds)
+        return torch.utils.data.ConcatDataset(datasets)
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,

@@ -18,9 +18,9 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.bds_policy as bds_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-import openpi.policies.bds_policy as bds_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -90,6 +90,10 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # Local LeRobot dataset directories. If set, these are loaded (and concatenated) instead of looking up
+    # `repo_id` under HF_LEROBOT_HOME. `repo_id` is then only used as a name (e.g., for the norm stats asset dir).
+    lerobot_roots: Sequence[str] = ()
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -491,7 +495,7 @@ class LeRobotBDSDataConfig(DataConfigFactory):
                         "observation.images.color.outside": "observation.images.color.outside",
                         "observation.state": "observation.state",
                         "actions": "action",
-                        "prompt": "tasks",
+                        "prompt": "prompt",
                     }
                 )
             ]
@@ -508,6 +512,15 @@ class LeRobotBDSDataConfig(DataConfigFactory):
             outputs=[bds_policy.BDSOutputs()],
         )
 
+        # Actions in the dataset are absolute joint positions. Optionally train on delta actions for the 14 arm
+        # joints (relative to the current state) while keeping the 2 vacuum commands absolute.
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(14, -2)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
         # Model transforms include things like tokenizing the prompt and action targets
         # You do not need to change anything here for your own dataset.
         model_transforms = ModelTransformFactory()(model_config)
@@ -519,6 +532,7 @@ class LeRobotBDSDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
         )
+
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -818,6 +832,47 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning BDS (VR_H5D humanoid) configs.
+    #
+    TrainConfig(
+        name="pi05_bds_vfe_sim_pick_lora",
+        # LoRA finetuning of pi0.5. State/actions are 16-dim (14 arm joints + 2 vacuums), padded to 32 by the model.
+        model=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ),
+        data=LeRobotBDSDataConfig(
+            # Only used as a name for the norm stats asset dir; data is loaded from `lerobot_roots`.
+            repo_id="bds/vfe_sim_pick_success",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                action_sequence_keys=("action",),
+                lerobot_roots=(
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20260928_VR_H5D_VFE_sim_pick_success_openpi",
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20260929_VR_H5D_VFE_sim_pick_success_openpi",
+                ),
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        batch_size=64,
+        num_train_steps=45_000,
+        # Decay the LR over the full run (the default schedule decays over 30k steps).
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000, peak_lr=2.5e-5, decay_steps=45_000, decay_lr=2.5e-6
+        ),
+        save_interval=5_000,
+        keep_period=5_000,
+        assets_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints/assets",
+        checkpoint_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints",
+        # Video (AV1) decoding is the data loading bottleneck, so use more workers than the default.
+        num_workers=12,
     ),
     #
     # Fine-tuning Aloha configs.

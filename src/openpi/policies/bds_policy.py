@@ -6,6 +6,11 @@ import numpy as np
 from openpi import transforms
 from openpi.models import model as _model
 
+# observation.state is 96-dim (pos/vel/eff for 32 joints). We keep only the positions of the joints that are
+# also predicted as actions: arms (14..27) and vacuums (30, 31), in the same order as the 16-dim action.
+STATE_INDICES = [*range(14, 28), 30, 31]
+ACTION_DIM = 16
+
 
 def _parse_image(image) -> np.ndarray:
     image = np.asarray(image)
@@ -43,10 +48,13 @@ class BDSInputs(transforms.DataTransformFn):
         outside_image = _parse_image(data["observation.images.color.outside"])
 
         # Create inputs dict. Do not change the keys in the dict below.
-        
-        state_idx = range(14, 28) + range(30, 32)
+        state = np.asarray(data["observation.state"])
+        # Accept both the full 96-dim dataset state and an already-sliced 16-dim state at inference.
+        if state.shape[-1] != ACTION_DIM:
+            state = state[..., STATE_INDICES]
+
         inputs = {
-            "state": data["observation.state"][state_idx],
+            "state": state,
             "image": {
                 "base_0_rgb": head_image,
                 "left_wrist_0_rgb": outside_image,
@@ -87,6 +95,5 @@ class BDSOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Only return the first N actions -- since we padded actions above to fit the model action
         # dimension, we need to now parse out the correct number of actions in the return dict.
-        # For BDS, we only return the first 7 actions (since the rest is padding).
-        # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"])}
+        # For BDS, we only return the first 16 actions (since the rest is padding).
+        return {"actions": np.asarray(data["actions"][..., :ACTION_DIM])}
