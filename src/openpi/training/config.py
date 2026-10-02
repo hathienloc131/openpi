@@ -877,6 +877,46 @@ _CONFIGS = [
         # Video (AV1) decoding is the data loading bottleneck, so use more workers than the default.
         num_workers=12,
     ),
+    TrainConfig(
+        name="pi05_bds_vfe_sim_pick_lora_0110",
+        # LoRA finetuning of pi0.5. State/actions are 16-dim (14 arm joints + 2 vacuums), padded to 32 by the model.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=50,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotBDSDataConfig(
+            # Only used as a name for the norm stats asset dir; data is loaded from `lerobot_roots`.
+            repo_id="bds/vfe_sim_pick_success_0110",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                action_sequence_keys=("action",),
+                lerobot_roots=(
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20261001_VR_H5D_VFE_sim_teleop_pick_success",
+                ),
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        batch_size=64,
+        num_train_steps=35_000,
+        # Decay the LR over the full run (the default schedule decays over 30k steps).
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000, peak_lr=2.5e-5, decay_steps=35_000, decay_lr=2.5e-6
+        ),
+        save_interval=5_000,
+        keep_period=5_000,
+        assets_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints/assets",
+        checkpoint_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints",
+        # Video (AV1) decoding is the data loading bottleneck, so use more workers than the default.
+        num_workers=12,
+    ),
     #
     # Fine-tuning Aloha configs.
     #
