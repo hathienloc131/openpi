@@ -13,16 +13,13 @@ Start the server first (see scripts/serve_bds.sh), then:
 Observation format expected by the server (see src/openpi/policies/bds_policy.py):
     "observation.images.color.head":    uint8 (H, W, 3) head camera image
     "observation.images.color.outside": uint8 (H, W, 3) outside camera image
-    "observation.state": float32 (16,) = 14 arm joint positions + 2 vacuums, in this order
-        left_shoulder_pitch, left_shoulder_roll, left_shoulder_yaw, left_elbow_pitch,
-        left_wrist_yaw, left_wrist_roll, left_wrist_pitch,
-        right_shoulder_pitch, right_shoulder_roll, right_shoulder_yaw, right_elbow_pitch,
-        right_wrist_yaw, right_wrist_roll, right_wrist_pitch, left_vacuum, right_vacuum
-        (the full 96-dim robot state is also accepted; it is sliced on the server)
+    "observation.state": float32 (96,) full robot state (sliced on the server), or already sliced:
+        - both-arm configs (e.g. pi05_bds_vfe_sim_pick_lora): (16,) = 14 arm joints + 2 vacuums
+        - left-arm configs (e.g. pi05_bds_vfe_sim_pick_lora_0110): (8,) = 7 left arm joints + left vacuum
     "prompt": str
 
-Response: {"actions": float32 (action_horizon, 16)} -- absolute joint position targets + vacuum commands,
-in the same order as the state.
+Response: {"actions": float32 (action_horizon, D)} -- absolute joint position targets + vacuum commands, in the
+same order as the sliced state (D = 16 or 8). With action_stride=2, consecutive actions are 2 frames apart.
 """
 
 import dataclasses
@@ -34,7 +31,8 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy
 import tyro
 
-STATE_INDICES = [*range(14, 28), 30, 31]
+# Dataset action dims predicted by each model type (by output dim).
+ACTION_INDICES_BY_DIM = {16: list(range(16)), 8: [*range(7), 14]}
 DEFAULT_PROMPT = (
     "Use the vacuum attached to your left hand to suck up the large curved metal frame and lift it from the table."
 )
@@ -51,13 +49,15 @@ class Args:
     dataset_root: str | None = None
     episode: int = 0
     frame: int = 0
+    # Frame spacing between predicted actions (must match the config's action_stride), for comparison only.
+    action_stride: int = 1
 
 
 def random_observation(prompt: str) -> dict:
     return {
         "observation.images.color.head": np.random.randint(256, size=(480, 720, 3), dtype=np.uint8),
         "observation.images.color.outside": np.random.randint(256, size=(480, 720, 3), dtype=np.uint8),
-        "observation.state": np.random.uniform(-0.5, 0.5, size=(16,)).astype(np.float32),
+        "observation.state": np.random.uniform(-0.5, 0.5, size=(96,)).astype(np.float32),
         "prompt": prompt,
     }
 
@@ -78,11 +78,11 @@ def dataset_observation(root: str, episode: int, frame: int) -> tuple[dict, np.n
     obs = {
         "observation.images.color.head": to_hwc_uint8(item["observation.images.color.head"]),
         "observation.images.color.outside": to_hwc_uint8(item["observation.images.color.outside"]),
-        "observation.state": np.asarray(item["observation.state"])[STATE_INDICES].astype(np.float32),
+        "observation.state": np.asarray(item["observation.state"]).astype(np.float32),  # full 96-dim
         "prompt": item["task"],
     }
     # Recorded actions for the following frames of this episode (for comparison).
-    actions = np.stack([np.asarray(ds.hf_dataset[i]["action"]) for i in range(frame, min(frame + 64, len(ds)))])
+    actions = np.stack([np.asarray(ds.hf_dataset[i]["action"]) for i in range(frame, len(ds))])
     return obs, actions
 
 
@@ -109,10 +109,10 @@ def main(args: Args) -> None:
         logging.info("request %d: actions %s, latency %.1f ms", i, actions.shape, latency_ms)
 
     np.set_printoptions(precision=3, suppress=True, linewidth=200)
-    print("state        :", obs["observation.state"])
     print("pred action 0:", actions[0])
     print("pred action -1:", actions[-1])
     if gt_actions is not None:
+        gt_actions = gt_actions[:: args.action_stride][:, ACTION_INDICES_BY_DIM[actions.shape[-1]]]
         n = min(len(actions), len(gt_actions))
         err = np.abs(actions[:n] - gt_actions[:n])
         print("gt   action 0:", gt_actions[0])

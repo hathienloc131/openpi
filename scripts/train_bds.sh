@@ -2,10 +2,10 @@
 # Finetune pi0.5 (LoRA) on the BDS VR_H5D sim pick datasets.
 # All caches, pretrained weights and checkpoints are kept on the /mnt mount (nothing in $HOME).
 #
-# Usage: bash scripts/train_bds.sh <exp_name> [extra train.py args...]
+# Usage: [CONFIG=<config_name>] bash scripts/train_bds.sh <exp_name> [extra train.py args...]
 set -euo pipefail
 
-CONFIG=pi05_bds_vfe_sim_pick_lora
+CONFIG=${CONFIG:-pi05_bds_vfe_sim_pick_lora}
 EXP_NAME=${1:?"usage: $0 <exp_name> [extra args]"}
 shift
 
@@ -23,8 +23,12 @@ mkdir -p "$OPENPI_DATA_HOME" "$HF_HOME" "$HF_LEROBOT_HOME" "$JAX_COMPILATION_CAC
 
 cd "$(dirname "$0")/.."
 
-# Compute normalization stats once (written to vr_checkpoints/assets/<config>/bds/vfe_sim_pick_success).
-if [ ! -f "$VLA_ROOT/vr_checkpoints/assets/$CONFIG/bds/vfe_sim_pick_success/norm_stats.json" ]; then
+# Compute normalization stats once (written to vr_checkpoints/assets/<config>/<repo_id>).
+NORM_STATS=$(.venv/bin/python -c "
+import openpi.training.config as c
+cfg = c.get_config('$CONFIG')
+print(cfg.assets_dirs / cfg.data.repo_id / 'norm_stats.json')")
+if [ ! -f "$NORM_STATS" ]; then
     .venv/bin/python scripts/compute_norm_stats.py --config-name "$CONFIG"
 fi
 

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import dataclasses
 
 import einops
@@ -8,8 +9,13 @@ from openpi.models import model as _model
 
 # observation.state is 96-dim (pos/vel/eff for 32 joints). We keep only the positions of the joints that are
 # also predicted as actions: arms (14..27) and vacuums (30, 31), in the same order as the 16-dim action.
-STATE_INDICES = [*range(14, 28), 30, 31]
+STATE_INDICES = (*range(14, 28), 30, 31)
 ACTION_DIM = 16
+FULL_STATE_DIM = 96
+
+# Left arm only: 7 left arm joints + left vacuum.
+LEFT_STATE_INDICES = (*range(14, 21), 30)  # in the 96-dim observation.state
+LEFT_ACTION_INDICES = (*range(7), 14)  # in the 16-dim action
 
 
 def _parse_image(image) -> np.ndarray:
@@ -33,6 +39,10 @@ class BDSInputs(transforms.DataTransformFn):
     # Determines which model will be used.
     # Do not change this for your own dataset.
     model_type: _model.ModelType
+    # Indices into the 96-dim observation.state that are used as the model state.
+    state_indices: Sequence[int] = STATE_INDICES
+    # Indices into the 16-dim dataset action that the model predicts. None = all 16.
+    action_indices: Sequence[int] | None = None
 
     def __call__(self, data: dict) -> dict:
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
@@ -49,9 +59,13 @@ class BDSInputs(transforms.DataTransformFn):
 
         # Create inputs dict. Do not change the keys in the dict below.
         state = np.asarray(data["observation.state"])
-        # Accept both the full 96-dim dataset state and an already-sliced 16-dim state at inference.
-        if state.shape[-1] != ACTION_DIM:
-            state = state[..., STATE_INDICES]
+        # Accept both the full 96-dim dataset state and an already-sliced state at inference.
+        if state.shape[-1] == FULL_STATE_DIM:
+            state = state[..., list(self.state_indices)]
+        elif state.shape[-1] != len(self.state_indices):
+            raise ValueError(
+                f"Expected observation.state of dim {FULL_STATE_DIM} or {len(self.state_indices)}, got {state.shape}"
+            )
 
         inputs = {
             "state": state,
@@ -72,7 +86,8 @@ class BDSInputs(transforms.DataTransformFn):
         # Pad actions to the model action dimension. Keep this for your own dataset.
         # Actions are only available during training.
         if "actions" in data:
-            inputs["actions"] = data["actions"]
+            actions = np.asarray(data["actions"])
+            inputs["actions"] = actions if self.action_indices is None else actions[..., list(self.action_indices)]
 
         # Pass the prompt (aka language instruction) to the model.
         # Keep this for your own dataset (but modify the key if the instruction is not
@@ -92,8 +107,10 @@ class BDSOutputs(transforms.DataTransformFn):
     For your own dataset, you can copy this class and modify the action dimension based on the comments below.
     """
 
+    # Number of action dims the model was trained to predict (16, or 8 for left arm only).
+    action_dim: int = ACTION_DIM
+
     def __call__(self, data: dict) -> dict:
         # Only return the first N actions -- since we padded actions above to fit the model action
         # dimension, we need to now parse out the correct number of actions in the return dict.
-        # For BDS, we only return the first 16 actions (since the rest is padding).
-        return {"actions": np.asarray(data["actions"][..., :ACTION_DIM])}
+        return {"actions": np.asarray(data["actions"][..., : self.action_dim])}

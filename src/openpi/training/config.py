@@ -87,6 +87,9 @@ class DataConfig:
     # sequence is defined by the `action_horizon` field in the model config. This should be adjusted if your
     # LeRobot dataset is using different keys to represent the action.
     action_sequence_keys: Sequence[str] = ("actions",)
+    # Frame spacing between consecutive actions in the chunk. With action_horizon=50 and action_stride=2 the
+    # chunk holds the actions at frames t, t+2, ..., t+98.
+    action_stride: int = 1
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
@@ -476,6 +479,11 @@ class LeRobotBDSDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = False
+    # Indices into the 96-dim observation.state used as the model state (default: both arms + both vacuums).
+    state_indices: Sequence[int] = bds_policy.STATE_INDICES
+    # Indices into the 16-dim dataset action that the model predicts (default: all 16). Must be in the same
+    # joint order as `state_indices`, since delta actions are computed against the state.
+    action_indices: Sequence[int] = tuple(range(bds_policy.ACTION_DIM))
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -508,14 +516,20 @@ class LeRobotBDSDataConfig(DataConfigFactory):
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
         data_transforms = _transforms.Group(
-            inputs=[bds_policy.BDSInputs(model_type=model_config.model_type)],
-            outputs=[bds_policy.BDSOutputs()],
+            inputs=[
+                bds_policy.BDSInputs(
+                    model_type=model_config.model_type,
+                    state_indices=self.state_indices,
+                    action_indices=self.action_indices,
+                )
+            ],
+            outputs=[bds_policy.BDSOutputs(action_dim=len(self.action_indices))],
         )
 
-        # Actions in the dataset are absolute joint positions. Optionally train on delta actions for the 14 arm
-        # joints (relative to the current state) while keeping the 2 vacuum commands absolute.
+        # Actions in the dataset are absolute joint positions. Optionally train on delta actions for the arm
+        # joints (relative to the current state) while keeping the vacuum commands (dataset dims 14, 15) absolute.
         if self.extra_delta_transform:
-            delta_action_mask = _transforms.make_bool_mask(14, -2)
+            delta_action_mask = tuple(i not in (14, 15) for i in self.action_indices)
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -879,7 +893,8 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_bds_vfe_sim_pick_lora_0110",
-        # LoRA finetuning of pi0.5. State/actions are 16-dim (14 arm joints + 2 vacuums), padded to 32 by the model.
+        # LoRA finetuning of pi0.5, left arm only: state/actions are 8-dim (7 left arm joints + left vacuum),
+        # padded to the model's action_dim (32). 50 actions spaced 2 frames apart (frames t, t+2, ..., t+98).
         model=pi0_config.Pi0Config(
             pi05=True,
             action_horizon=50,
@@ -892,11 +907,14 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
                 action_sequence_keys=("action",),
+                action_stride=2,
                 lerobot_roots=(
-                    "/mnt/data/sftp/data/vla/data_sim_ac/20261001_VR_H5D_VFE_sim_teleop_pick_success",
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20261001_VR_H5D_VFE_sim_teleop_pick_success_openpi",
                 ),
             ),
             extra_delta_transform=True,
+            state_indices=bds_policy.LEFT_STATE_INDICES,
+            action_indices=bds_policy.LEFT_ACTION_INDICES,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         freeze_filter=pi0_config.Pi0Config(
