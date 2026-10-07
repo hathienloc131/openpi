@@ -935,6 +935,52 @@ _CONFIGS = [
         # Video (AV1) decoding is the data loading bottleneck, so use more workers than the default.
         num_workers=12,
     ),
+    TrainConfig(
+        name="pi05_bds_vfe_sim_pick_lora_0710",
+        # LoRA finetuning of pi0.5, left arm only: state/actions are 8-dim (7 left arm joints + left vacuum),
+        # padded to the model's action_dim (32). 50 actions spaced 2 frames apart (frames t, t+2, ..., t+98).
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=50,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotBDSDataConfig(
+            # Only used as a name for the norm stats asset dir; data is loaded from `lerobot_roots`.
+            repo_id="bds/vfe_sim_pick_success_0710",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                action_sequence_keys=("action",),
+                action_stride=2,
+                lerobot_roots=(
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20261001_VR_H5D_VFE_sim_teleop_pick_success_openpi",
+                    "/mnt/data/sftp/data/vla/data_sim_ac/20261006_VR_H5D_VFE_sim_teleop_pick_success_openpi",
+                ),
+            ),
+            extra_delta_transform=True,
+            state_indices=bds_policy.LEFT_STATE_INDICES,
+            action_indices=bds_policy.LEFT_ACTION_INDICES,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        batch_size=64,
+        # ~20 epochs: 20 * (110_234 + 51_894) frames / 64 = 50_665 steps, rounded up.
+        num_train_steps=51_000,
+        # Decay the LR over the full run (the default schedule decays over 30k steps).
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000, peak_lr=2.5e-5, decay_steps=51_000, decay_lr=2.5e-6
+        ),
+        save_interval=5_000,
+        keep_period=5_000,
+        assets_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints/assets",
+        checkpoint_base_dir="/mnt/data/sftp/data/vla/vr_checkpoints",
+        # Video (AV1) decoding is the data loading bottleneck, so use more workers than the default.
+        num_workers=12,
+    ),
     #
     # Fine-tuning Aloha configs.
     #
